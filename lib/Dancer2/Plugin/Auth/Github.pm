@@ -27,7 +27,7 @@ my $state_salt = "RandomSalt";
 
 #A method to initialize everything
 register 'auth_github_init' => sub {
-    my $dsl;
+    my $dsl = shift;
     
 	my $config = plugin_setting;
 	
@@ -35,7 +35,7 @@ register 'auth_github_init' => sub {
     $client_secret    = $config->{client_secret};
     	
 	for my $param (qw/client_id client_secret/) {
-        croak "'$param' is expected but not found in configuration" 
+        croak "$param is expected but not found in configuration" 
             unless $config->{$param};
     }
 	#sthe following configs are optional.
@@ -52,40 +52,43 @@ register 'auth_github_init' => sub {
 	{
 		$github_auth_success = $config->{github_auth_success};
 	}
-	debug 'Loaded config..';
+	#$dsl->debug 'Loaded config..';
     
     #registers this as a callback url
-    $dsl->get '/auth/github/callback' => sub {
-        my $generate_state = sha256_hex($client_id.$client_secret.$state_salt);
-        my $state_received = params->{'state'};
-        if($state_received eq $generate_state) { 
-            my $code                   = params->{'code'};
-            my $browser                = LWP::UserAgent->new;
-            my $resp                   = $browser->post($github_post_url,
-            [
-            client_id                  => $client_id,
-            client_secret              => $client_secret, 
-            code                       => $code,
-            state                      => $state_received
-            ]);
-            die "error while fetching: ", $resp->status_line
-            unless $resp->is_success;
-            
-            my %querystr = parse_query_str($resp->decoded_content);
-            my $acc = $querystr{access_token};
-            
-            if($acc) {
-                my $jresp  = $browser->get("https://api.github.com/user?access_token=$acc");
-                my $json = decode_json($jresp->decoded_content);
-                session 'github_user' => $json;
-                session 'github_access_token' => $acc;
-                #session 'logged_in' => true;
-                redirect $github_auth_success;
-                return;
-            } 
-        }
-        redirect $github_auth_failed;
-    };
+    $dsl->app->add_route(
+	    regexp => '/auth/github/callback',
+	    code => sub {
+		my $generate_state = sha256_hex($client_id.$client_secret.$state_salt);
+		my $state_received = $dsl->params->{'state'};
+		if($state_received eq $generate_state) { 
+		    my $code                   = $dsl->params->{'code'};
+		    my $browser                = LWP::UserAgent->new;
+		    my $resp                   = $browser->post($github_post_url,
+		    [
+		    client_id                  => $client_id,
+		    client_secret              => $client_secret, 
+		    code                       => $code,
+		    state                      => $state_received
+		    ]);
+		    die "error while fetching: ", $resp->status_line
+		    unless $resp->is_success;
+		    
+		    my %querystr = parse_query_str($resp->decoded_content);
+		    my $acc = $querystr{access_token};
+		    
+		    if($acc) {
+			my $jresp  = $browser->get("https://api.github.com/user?access_token=$acc");
+			my $json = decode_json($jresp->decoded_content);
+			$dsl->app->session( 'github_user' ,  $json);
+			$dsl->app->session('github_access_token' , $acc);
+			#session 'logged_in' => true;
+			$dsl->redirect($github_auth_success);
+			return;
+		    } 
+		}
+		$dsl->redirect($github_auth_failed);
+	    },
+	method => 'get');
 };
 #returns the url you need to redirect to to authenticate on github
 register 'auth_github_authenticate_url'  => sub {
